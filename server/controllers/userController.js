@@ -1,4 +1,5 @@
 const asyncHandler = require("express-async-handler");
+const mongoose = require("mongoose");
 const User = require("../models/User");
 const Post = require("../models/Post");
 const Notification = require("../models/Notification");
@@ -6,9 +7,10 @@ const cloudinary = require("../config/cloudinary");
 const ApiError = require("../utils/ApiError");
 const emitNotification = require("../utils/emitNotification");
 
-// @route   GET /api/users/:username
-// @access  Public
+// Get User Profile
 const getUserProfile = asyncHandler(async (req, res) => {
+  if (!req.params.username) throw new ApiError(400, "Username is required");
+
   const user = await User.findOne({ username: req.params.username.toLowerCase() })
     .populate("followers", "name username avatar")
     .populate("following", "name username avatar");
@@ -16,135 +18,121 @@ const getUserProfile = asyncHandler(async (req, res) => {
   if (!user) throw new ApiError(404, "User not found");
 
   const postCount = await Post.countDocuments({ author: user._id });
-
-  res.status(200).json({
-    success: true,
-    user: {
-      ...user.toSafeObject(),
-      postCount,
-      isFollowing: req.user ? user.followers.some((f) => f._id.equals(req.user._id)) : false,
-    },
+  
+  res.status(200).json({ 
+    success: true, 
+    user: { 
+      ...user.toSafeObject(), 
+      postCount, 
+      isFollowing: req.user ? user.followers.some((f) => f._id.equals(req.user._id)) : false 
+    } 
   });
 });
 
-// @route   PUT /api/users/profile
-// @access  Private
+// Update Profile
 const updateProfile = asyncHandler(async (req, res) => {
   const { name, bio, location, website } = req.body;
-
   const user = await User.findById(req.user._id);
+  
   if (!user) throw new ApiError(404, "User not found");
-
-  if (name !== undefined) user.name = name;
-  if (bio !== undefined) user.bio = bio;
-  if (location !== undefined) user.location = location;
-  if (website !== undefined) user.website = website;
-
+  
+  Object.assign(user, { name, bio, location, website });
   await user.save();
+  
   res.status(200).json({ success: true, user: user.toSafeObject() });
 });
 
-// @route   PUT /api/users/avatar
-// @access  Private
+// Update Avatar
 const updateAvatar = asyncHandler(async (req, res) => {
   if (!req.file) throw new ApiError(400, "Please upload an image");
-
+  
   const user = await User.findById(req.user._id);
-
+  
   if (user.avatar?.publicId) {
     await cloudinary.uploader.destroy(user.avatar.publicId).catch(() => {});
   }
-
+  
   user.avatar = { url: req.file.path, publicId: req.file.filename };
   await user.save();
-
+  
   res.status(200).json({ success: true, user: user.toSafeObject() });
 });
 
-// @route   PUT /api/users/cover
-// @access  Private
+// Update Cover Image
 const updateCoverImage = asyncHandler(async (req, res) => {
   if (!req.file) throw new ApiError(400, "Please upload an image");
-
+  
   const user = await User.findById(req.user._id);
-
+  
   if (user.coverImage?.publicId) {
     await cloudinary.uploader.destroy(user.coverImage.publicId).catch(() => {});
   }
-
+  
   user.coverImage = { url: req.file.path, publicId: req.file.filename };
   await user.save();
-
+  
   res.status(200).json({ success: true, user: user.toSafeObject() });
 });
 
-// @route   PUT /api/users/:id/follow
-// @access  Private
+// Toggle Follow/Unfollow
 const toggleFollow = asyncHandler(async (req, res) => {
   const targetId = req.params.id;
+  const currentUserId = req.user._id;
 
-  if (targetId === String(req.user._id)) {
-    throw new ApiError(400, "You cannot follow yourself");
-  }
+  if (!mongoose.Types.ObjectId.isValid(targetId)) throw new ApiError(400, "Invalid User ID");
+  if (targetId === String(currentUserId)) throw new ApiError(400, "You cannot follow yourself");
 
-  const targetUser = await User.findById(targetId);
-  if (!targetUser) throw new ApiError(404, "User not found");
+  const isFollowing = await User.exists({ _id: currentUserId, following: targetId });
 
-  const currentUser = await User.findById(req.user._id);
-  const alreadyFollowing = currentUser.following.some((id) => id.equals(targetId));
-
-  if (alreadyFollowing) {
-    currentUser.following = currentUser.following.filter((id) => !id.equals(targetId));
-    targetUser.followers = targetUser.followers.filter((id) => !id.equals(req.user._id));
+  if (isFollowing) {
+    await User.findByIdAndUpdate(currentUserId, { $pull: { following: targetId } });
+    await User.findByIdAndUpdate(targetId, { $pull: { followers: currentUserId } });
   } else {
-    currentUser.following.push(targetId);
-    targetUser.followers.push(req.user._id);
-    const notification = await Notification.create({
-      recipient: targetId,
-      sender: req.user._id,
-      type: "follow",
-    });
-    await notification.populate("sender", "name username avatar");
-    emitNotification(req, targetId, notification);
+    await User.findByIdAndUpdate(currentUserId, { $addToSet: { following: targetId } });
+    await User.findByIdAndUpdate(targetId, { $addToSet: { followers: currentUserId } });
+    
+    const notification = await Notification.create({ recipient: targetId, sender: currentUserId, type: "follow" });
+    const populatedNotif = await notification.populate("sender", "name username avatar");
+    emitNotification(req, targetId, populatedNotif);
   }
 
-  await currentUser.save();
-  await targetUser.save();
-
-  res.status(200).json({
-    success: true,
-    isFollowing: !alreadyFollowing,
-    followerCount: targetUser.followers.length,
+  const updatedTarget = await User.findById(targetId).select("followers");
+  res.status(200).json({ 
+    success: true, 
+    isFollowing: !isFollowing, 
+    followerCount: updatedTarget.followers.length 
   });
 });
 
-// @route   GET /api/users/search?q=term
-// @access  Public
+// Search Users
 const searchUsers = asyncHandler(async (req, res) => {
   const { q } = req.query;
+
   if (!q || q.trim().length === 0) {
     return res.status(200).json({ success: true, users: [] });
   }
 
-  const regex = new RegExp(q.trim(), "i");
+  const query = q.trim();
   const users = await User.find({
-    $or: [{ username: regex }, { name: regex }],
+    $or: [
+      { username: { $regex: query, $options: "i" } },
+      { name: { $regex: query, $options: "i" } }
+    ]
   })
-    .select("name username avatar bio")
-    .limit(20);
+  .select("name username avatar bio")
+  .limit(20);
 
   res.status(200).json({ success: true, users });
 });
 
-// @route   GET /api/users/suggestions
-// @access  Private
+// Get Suggestions
 const getSuggestions = asyncHandler(async (req, res) => {
-  const currentUser = await User.findById(req.user._id);
-  const excludeIds = [req.user._id, ...currentUser.following];
-
-  const suggestions = await User.find({ _id: { $nin: excludeIds } })
-    .select("name username avatar bio")
-    .limit(5);
+  const currentUser = await User.findById(req.user._id).select("following");
+  const suggestions = await User.find({ 
+    _id: { $nin: [req.user._id, ...currentUser.following] } 
+  })
+  .select("name username avatar bio")
+  .limit(5);
 
   res.status(200).json({ success: true, users: suggestions });
 });

@@ -1,7 +1,9 @@
 const jwt = require("jsonwebtoken");
+const mongoose = require("mongoose");
 const asyncHandler = require("express-async-handler");
 const User = require("../models/User");
 const ApiError = require("../utils/ApiError");
+const { findFallbackUserById } = require("../utils/authFallback");
 
 /**
  * Verifies the JWT (from the httpOnly cookie or Authorization header)
@@ -20,6 +22,18 @@ const protect = asyncHandler(async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    if (mongoose.connection.readyState !== 1) {
+      const user = findFallbackUserById(decoded.id);
+      if (!user) {
+        throw new ApiError(401, "User belonging to this token no longer exists");
+      }
+
+      req.user = user;
+      next();
+      return;
+    }
+
     const user = await User.findById(decoded.id);
 
     if (!user) {

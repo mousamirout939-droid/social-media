@@ -1,7 +1,12 @@
 const asyncHandler = require("express-async-handler");
+const mongoose = require("mongoose");
 const User = require("../models/User");
 const generateToken = require("../utils/generateToken");
 const ApiError = require("../utils/ApiError");
+const {
+  createFallbackUser,
+  findFallbackUserByEmailOrUsername,
+} = require("../utils/authFallback");
 
 const cookieOptions = {
   httpOnly: true,
@@ -25,6 +30,18 @@ const sendAuthResponse = (user, statusCode, res) => {
 const registerUser = asyncHandler(async (req, res) => {
   const { name, username, email, password } = req.body;
 
+  if (mongoose.connection.readyState !== 1) {
+    const existing = findFallbackUserByEmailOrUsername(email) || findFallbackUserByEmailOrUsername(username);
+    if (existing) {
+      const field = existing.email === email ? "email" : "username";
+      throw new ApiError(409, `That ${field} is already in use`);
+    }
+
+    const user = createFallbackUser({ name, username, email, password });
+    sendAuthResponse(user, 201, res);
+    return;
+  }
+
   const existing = await User.findOne({ $or: [{ email }, { username }] });
   if (existing) {
     const field = existing.email === email ? "email" : "username";
@@ -39,6 +56,16 @@ const registerUser = asyncHandler(async (req, res) => {
 // @access  Public
 const loginUser = asyncHandler(async (req, res) => {
   const { emailOrUsername, password } = req.body;
+
+  if (mongoose.connection.readyState !== 1) {
+    const user = findFallbackUserByEmailOrUsername(emailOrUsername);
+    if (!user || !(await user.matchPassword(password))) {
+      throw new ApiError(401, "Invalid credentials");
+    }
+
+    sendAuthResponse(user, 200, res);
+    return;
+  }
 
   const user = await User.findOne({
     $or: [{ email: emailOrUsername.toLowerCase() }, { username: emailOrUsername.toLowerCase() }],

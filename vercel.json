@@ -1,0 +1,11 @@
+{
+  "experimentalServices": {
+    "bloom-api": {
+      "type": "web",
+      "root": "server",
+      "entrypoint": "server.js",
+      "routePrefix": "/",
+      "buildCommand": "npm install"
+    }
+  }
+}
