@@ -7,6 +7,7 @@ const {
   createFallbackUser,
   findFallbackUserByEmailOrUsername,
 } = require("../utils/authFallback");
+const { ensureDefaultAdmin } = require("../utils/ensureAdmin");
 
 const cookieOptions = {
   httpOnly: true,
@@ -75,6 +76,9 @@ const loginUser = asyncHandler(async (req, res) => {
     throw new ApiError(401, "Invalid credentials");
   }
 
+  user.loginCount += 1;
+  await user.save();
+
   sendAuthResponse(user, 200, res);
 });
 
@@ -91,4 +95,23 @@ const getMe = asyncHandler(async (req, res) => {
   res.status(200).json({ success: true, user: req.user.toSafeObject() });
 });
 
-module.exports = { registerUser, loginUser, logoutUser, getMe };
+const getAdminStats = asyncHandler(async (req, res) => {
+  if (!req.user?.isAdmin) {
+    throw new ApiError(403, "Access denied");
+  }
+
+  const totalUsers = await User.countDocuments();
+  const totalLogins = await User.aggregate([{ $group: { _id: null, total: { $sum: "$loginCount" } } }]);
+  const recentUsers = await User.find().sort({ createdAt: -1 }).limit(5).select("name username email createdAt");
+
+  res.status(200).json({
+    success: true,
+    stats: {
+      totalUsers,
+      totalLogins: totalLogins[0]?.total || 0,
+      recentUsers,
+    },
+  });
+});
+
+module.exports = { registerUser, loginUser, logoutUser, getMe, getAdminStats };

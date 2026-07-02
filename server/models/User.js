@@ -87,6 +87,14 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    isAdmin: {
+      type: Boolean,
+      default: false,
+    },
+    loginCount: {
+      type: Number,
+      default: 0,
+    },
     refreshToken: {
       type: String,
       select: false,

@@ -15,6 +15,7 @@ const rateLimit = require("express-rate-limit");
 
 const connectDB = require("./config/db");
 const { notFound, errorHandler } = require("./middleware/errorHandler");
+const { ensureDefaultAdmin } = require("./utils/ensureAdmin");
 
 const authRoutes = require("./routes/authRoutes");
 const userRoutes = require("./routes/userRoutes");
@@ -117,7 +118,16 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
   console.log(`Bloom server running on port ${PORT}`);
-  connectDB().then((ready) => { dbReady = ready; });
+  connectDB().then(async (ready) => {
+    dbReady = ready;
+    if (ready) {
+      try {
+        await ensureDefaultAdmin();
+      } catch (error) {
+        console.error("Admin seed failed:", error.message);
+      }
+    }
+  });
 });
 
 process.on("unhandledRejection", (err) => console.error("Unhandled Rejection:", err.message));
